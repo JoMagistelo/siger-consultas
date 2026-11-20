@@ -393,7 +393,7 @@ class App(tk.Tk):
                 tipo, datos = self.avisos.get_nowait()
                 if tipo == 'estado':
                     valor = datos['valor']
-                    color = '#20A466' if valor == 'ACTIVA' else ('#DB9A20' if valor in ('ESPERANDO','CONSULTANDO') else '#A0A9B4')
+                    color = '#20A466' if valor in ('ACTIVA', 'CONSULTANDO') else ('#DB9A20' if valor == 'ESPERANDO' else '#A0A9B4')
                     self.luz.itemconfigure(self.bombilla, fill=color)
                     self.etiqueta.configure(text='CONECTADA' if valor == 'ACTIVA' else valor)
                 elif tipo == 'log':
