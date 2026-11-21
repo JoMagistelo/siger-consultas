@@ -54,6 +54,94 @@ JS_CONSULTA = r"""async (criterios) => {
 }"""
 
 
+# Modo beta: dos iframes independientes, cada uno con ViewState propio.
+# No se comparte un único formulario JSF entre peticiones paralelas.
+JS_PARALELO = r"""async (criterios) => {
+  if (criterios.length !== 2) return {disponible: false, razon: 'Se requieren dos consultas'};
+  const d = document;
+  const marcoInicial = d.querySelector('form[id="formValores"]');
+  const original = d.querySelector('input[name="javax.faces.ViewState"]')?.value;
+  if (!marcoInicial || !original) {
+    return {disponible: false, razon: 'El formulario principal ya no está disponible'};
+  }
+  const crear = async (i) => {
+    let f = d.getElementById('__siger_consultas_worker_' + i);
+    if (f && f.contentDocument?.querySelector('form[id="formValores"]')) return f;
+    if (f) f.remove();
+    f = d.createElement('iframe');
+    f.id = '__siger_consultas_worker_' + i;
+    f.setAttribute('aria-hidden', 'true');
+    f.style.cssText = 'position:absolute;left:-10000px;top:0;width:1px;height:1px;border:0';
+    d.body.appendChild(f);
+    await new Promise((resolve, reject) => {
+      const reloj = setTimeout(() => reject(new Error('La vista adicional no cargó')), 15000);
+      f.onload = () => { clearTimeout(reloj); resolve(); };
+      f.onerror = () => { clearTimeout(reloj); reject(new Error('Fallo al abrir vista adicional')); };
+      f.src = location.href;
+    });
+    return f;
+  };
+  try {
+    const marcos = [await crear(0), await crear(1)];
+    const estados = marcos.map(f => {
+      const doc = f.contentDocument;
+      if (!doc || !doc.getElementById('formValores') ||
+          !doc.getElementById('formValores:consultaa'))
+        throw new Error('SIGER no habilita Consulta pública en vistas adicionales');
+      return doc.querySelector('input[name="javax.faces.ViewState"]')?.value;
+    });
+    if (estados.some(v => !v) || estados[0] === estados[1] ||
+        estados.includes(original))
+      throw new Error('Las vistas no tienen ViewState independientes');
+    const destino = new URL('/siger2/xhtml/consulta/consultaPublica/consultaPublica.xhtml', location.origin);
+    const enviar = async (frame, criterio) => {
+      const doc = frame.contentDocument;
+      const estado = doc.querySelector('input[name="javax.faces.ViewState"]');
+      if (!estado || !estado.value) throw new Error('ViewState no disponible');
+      const datos = new URLSearchParams({
+        'javax.faces.partial.ajax': 'true',
+        'javax.faces.source': 'formValores:consultaa',
+        'javax.faces.partial.execute': '@all',
+        'javax.faces.partial.render': 'formValores:dataTableCaratula formValores:panelBotones',
+        'formValores:consultaa': 'formValores:consultaa',
+        'formValores': 'formValores',
+        'formValores:fme': '',
+        'formValores:rsocial': criterio.razon,
+        'formValores:clvOficina': '',
+        'formValores:clvEstado': '',
+        'formValores:nombre': criterio.nombre,
+        'formValores:apellido_paterno': criterio.paterno,
+        'formValores:apellido_materno': criterio.materno,
+        'formValores:dataTableCaratula_selection': '',
+        'javax.faces.ViewState': estado.value
+      });
+      const controller = new AbortController();
+      const reloj = setTimeout(() => controller.abort(), 120000);
+      try {
+        const r = await frame.contentWindow.fetch(destino.toString(), {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Faces-Request': 'partial/ajax', 'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/xml, text/xml, */*; q=0.01',
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+          body: datos.toString(), signal: controller.signal
+        });
+        const cuerpo = await r.text();
+        const xml = new DOMParser().parseFromString(cuerpo, 'text/xml');
+        const actualizado = [...xml.getElementsByTagName('update')]
+          .find(n => n.getAttribute('id') === 'javax.faces.ViewState');
+        if (actualizado?.textContent) estado.value = actualizado.textContent;
+        return {codigo: r.status, cuerpo};
+      } finally { clearTimeout(reloj); }
+    };
+    const resultados = await Promise.allSettled(marcos.map((f,i) => enviar(f,criterios[i])));
+    return {disponible: true, resultados: resultados.map(r =>
+      r.status === 'fulfilled' ? r.value : {codigo: 0, cuerpo: '', error: String(r.reason)})};
+  } catch (err) {
+    return {disponible: false, razon: String(err.message || err)};
+  }
+}"""
+
+
 class Navegador(threading.Thread):
     """El navegador solo es manipulado desde este hilo de trabajo."""
     def __init__(self, avisos: queue.Queue, comandos: queue.Queue):
@@ -174,36 +262,86 @@ class Navegador(threading.Thread):
                             except Exception as exc:
                                 self.enviar('error', texto=str(exc))
                         ultimo = 0
-                    elif accion == 'consultar':
+                    elif accion in ('consultar', 'consultar_paralelo'):
                         self.cancelar.clear()
                         contextos = browser.contexts if browser and browser.is_connected() else ([contexto] if contexto else [])
                         pagina = self.localizar(contextos)
                         if not pagina:
-                            self.enviar('error', texto='No se detectó el formulario de SIGER. Abre Consulta pública en la ventana de Chrome controlada por esta aplicación.')
+                            self.enviar('error', texto='No se detectó el formulario de SIGER. Entra a Consulta pública.')
                             self.enviar('fin')
                             continue
                         self.enviar('estado', valor='CONSULTANDO')
-                        for indice, reg in datos:
-                            if self.cancelar.is_set():
-                                break
-                            if not self.pagina_lista(pagina):
-                                self.enviar('fila', indice=indice, estado='ERROR', cantidad=None,
-                                            mensaje='Sesión o formulario no disponible')
-                                break
-                            self.enviar('trabajando', indice=indice)
-                            try:
-                                cantidad = self.consultar(pagina, reg)
-                                self.enviar('fila', indice=indice, estado='ENCONTRADO' if cantidad else 'SIN RESULTADOS',
-                                            cantidad=cantidad, mensaje='Coincidencia preliminar; verificar identidad')
-                            except Exception as exc:
-                                self.enviar('fila', indice=indice, estado='ERROR', cantidad=None, mensaje=str(exc)[:180])
-                                # No transformar fallos de sesión en resultados negativos.
-                                if any(t in str(exc).lower() for t in ('sesión', 'formulario', 'xml', 'viewstate', 'http')):
-                                    break
-                            for _ in range(10):
+                        grupos = agrupar_pendientes(datos)
+                        self.enviar('log', texto=f'{len(datos)} entradas, {len(grupos)} consultas distintas.')
+                        paralelo = accion == 'consultar_paralelo'
+                        fallos_sesion = False
+
+                        def informar(grupo, cantidad=None, error=None):
+                            for indice, reg in grupo:
+                                if error:
+                                    self.enviar('fila', indice=indice, estado='ERROR',
+                                                cantidad=None, mensaje=error[:180])
+                                else:
+                                    self.enviar('fila', indice=indice,
+                                                estado='ENCONTRADO' if cantidad else 'SIN RESULTADOS',
+                                                cantidad=cantidad,
+                                                mensaje='Coincidencia preliminar; verificar identidad')
+
+                        posicion = 0
+                        while posicion < len(grupos) and not self.cancelar.is_set():
+                            lote = grupos[posicion:posicion + (2 if paralelo else 1)]
+                            posicion += len(lote)
+                            if paralelo and len(lote) == 2:
+                                for grupo in lote:
+                                    for indice, _ in grupo:
+                                        self.enviar('trabajando', indice=indice)
+                                try:
+                                    respuesta = pagina.evaluate(JS_PARALELO,
+                                        [grupo[0][1].criterios() for grupo in lote])
+                                    if respuesta.get('disponible') and len(respuesta.get('resultados', [])) == 2:
+                                        for grupo, resultado in zip(lote, respuesta['resultados']):
+                                            try:
+                                                if resultado.get('codigo') != 200:
+                                                    raise ValueError(resultado.get('error') or
+                                                        f'HTTP {resultado.get("codigo")}')
+                                                cantidad, _ = analizar_xml(resultado['cuerpo'])
+                                                informar(grupo, cantidad=cantidad)
+                                            except Exception as exc:
+                                                informar(grupo, error=str(exc))
+                                        continue
+                                    paralelo = False
+                                    self.enviar('log', texto='No se pudieron abrir vistas independientes. '
+                                                'Continuando 1 a 1: ' + respuesta.get('razon', 'sin detalles'))
+                                except Exception as exc:
+                                    paralelo = False
+                                    self.enviar('log', texto='Modo paralelo no disponible; continuando 1 a 1: ' +
+                                                str(exc)[:100])
+                            for grupo in lote:
                                 if self.cancelar.is_set():
                                     break
-                                time.sleep(.2)
+                                if not self.pagina_lista(pagina):
+                                    informar(grupo, error='Sesión o formulario no disponible')
+                                    fallos_sesion = True
+                                    break
+                                for indice, _ in grupo:
+                                    self.enviar('trabajando', indice=indice)
+                                try:
+                                    cantidad = self.consultar(pagina, grupo[0][1])
+                                    informar(grupo, cantidad=cantidad)
+                                except Exception as exc:
+                                    informar(grupo, error=str(exc))
+                                    if any(t in str(exc).lower() for t in
+                                           ('sesión', 'formulario', 'xml', 'viewstate', 'http')):
+                                        fallos_sesion = True
+                                        break
+                                # Modo normal: pausa responsable; modo beta con fallback: un poco menor.
+                                pausa = 0.6 if accion == 'consultar_paralelo' else 2.0
+                                for _ in range(int(pausa / 0.2)):
+                                    if self.cancelar.is_set():
+                                        break
+                                    time.sleep(0.2)
+                            if fallos_sesion:
+                                break
                         self.enviar('fin')
                         ultimo = 0
         except Exception as exc:
