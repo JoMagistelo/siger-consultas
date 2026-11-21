@@ -70,6 +70,7 @@ JS_PARALELO = r"""async (criterios) => {
     if (f) f.remove();
     f = d.createElement('iframe');
     f.id = '__siger_consultas_worker_' + i;
+    f.name = f.id;
     f.setAttribute('aria-hidden', 'true');
     f.style.cssText = 'position:absolute;left:-10000px;top:0;width:1px;height:1px;border:0';
     d.body.appendChild(f);
@@ -177,7 +178,11 @@ class Navegador(threading.Thread):
                 try:
                     if pagina.is_closed():
                         continue
-                    for frame in reversed(pagina.frames):
+                    # Preferir el formulario visible: la vista principal antes de iframes.
+                    # Nunca seleccionar los workers ocultos del modo beta.
+                    for frame in pagina.frames:
+                        if (frame.name or '').startswith('__siger_consultas_worker_'):
+                            continue
                         if self.pagina_lista(frame):
                             return frame
                 except Exception:
