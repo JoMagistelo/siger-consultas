@@ -60,8 +60,8 @@ def preparar(texto: str, tipo: str) -> Consulta:
     # Opcional: nombre(s) | paterno | materno para apellidos compuestos.
     if "|" in texto:
         trozos = [x.strip() for x in texto.split("|")]
-        if len(trozos) != 3 or not all(trozos):
-            raise ValueError("Usa el formato Nombre(s) | Paterno | Materno")
+        if len(trozos) != 3 or not any(trozos):
+            raise ValueError("Usa Nombre(s) | Paterno | Materno (al menos uno con texto)")
         nombre, paterno, materno = trozos
     else:
         nombre, paterno, materno = separar_nombre(original)
@@ -69,28 +69,36 @@ def preparar(texto: str, tipo: str) -> Consulta:
 
 
 def aplicar_edicion(reg: Consulta, campo: str, valor: str) -> Consulta:
-    """La vista previa es la fuente de criterios; editar invalida un resultado previo."""
+    """Actualiza el criterio de la celda e invalida el resultado anterior.
+
+    En PERSONA cada campo de nombre o apellido es opcional. Sólo se impide
+    consultar con los tres vacíos, para no enviar búsquedas sin criterio.
+    """
     valor = " ".join(valor.split())
-    if not valor:
-        raise ValueError("El campo no puede quedar vacío")
     if reg.tipo == "EMPRESA":
         if campo != "original":
             raise ValueError("Para empresas edita la razón social")
+        if not valor:
+            raise ValueError("La razón social debe contener texto para realizar la búsqueda")
         reg.fuente = reg.fuente or reg.original
         reg.original = valor
         reg.razon = valor
     elif reg.tipo == "PERSONA":
         if campo == "original":
+            if not valor:
+                raise ValueError("Para dejar vacíos nombres o apellidos, edita sus propias celdas")
             nuevo = preparar(valor, "PERSONA")
             reg.fuente = reg.fuente or reg.original
             reg.original = nuevo.original
             reg.nombre, reg.paterno, reg.materno = nuevo.nombre, nuevo.paterno, nuevo.materno
         elif campo in ("nombre", "paterno", "materno"):
+            criterios = {k: getattr(reg, k) for k in ("nombre", "paterno", "materno")}
+            criterios[campo] = valor
+            if not any(criterios.values()):
+                raise ValueError("Introduce al menos un nombre o apellido para consultar SIGER")
             setattr(reg, campo, valor)
         else:
             raise ValueError("Columna no editable")
-        if not all((reg.nombre.strip(), reg.paterno.strip(), reg.materno.strip())):
-            raise ValueError("Nombre y ambos apellidos son obligatorios")
     else:
         raise ValueError("Tipo de consulta desconocido")
     reg.estado, reg.registros, reg.observacion, reg.fecha = "PENDIENTE", None, "", ""
