@@ -38,7 +38,10 @@ JS_CONSULTA = r"""async (criterios) => {
   const abortar = new AbortController();
   const reloj = setTimeout(() => abortar.abort(), 120000);
   try {
-    const respuesta = await fetch(location.pathname, {
+    // SIGER muestra index.xhtml, pero las solicitudes AJAX van a consultaPublica.xhtml.
+    // No usar location.pathname: apuntaría a index.xhtml.
+    const destino = new URL('/siger2/xhtml/consulta/consultaPublica/consultaPublica.xhtml', location.origin);
+    const respuesta = await fetch(destino.toString(), {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Faces-Request': 'partial/ajax', 'X-Requested-With': 'XMLHttpRequest',
                  'Accept': 'application/xml, text/xml, */*; q=0.01',
@@ -63,19 +66,33 @@ class Navegador(threading.Thread):
         self.avisos.put((clase, datos))
 
     @staticmethod
-    def pagina_lista(page) -> bool:
+    def pagina_lista(frame) -> bool:
+        """Detectar el formulario JSF real, independientemente de la URL visible.
+
+        La página puede mostrarse en index.xhtml e incluir el formulario en un frame.
+        La primera respuesta válida confirma si la sesión sigue autenticada.
+        """
         try:
-            return (not page.is_closed() and 'consultaPublica.xhtml' in page.url and
-                    page.locator('[id="formValores:consultaa"]').count() == 1 and
-                    page.locator('input[name="javax.faces.ViewState"]').count() > 0)
+            if frame.is_detached():
+                return False
+            return (frame.locator('form[id="formValores"]').count() > 0 and
+                    frame.locator('[id="formValores:consultaa"]').count() > 0 and
+                    frame.locator('input[name="javax.faces.ViewState"]').count() > 0)
         except Exception:
             return False
 
     def localizar(self, contextos):
+        """Buscar Consulta pública entre las pestañas y frames de Chrome/Edge."""
         for ctx in contextos:
             for pagina in reversed(ctx.pages):
-                if self.pagina_lista(pagina):
-                    return pagina
+                try:
+                    if pagina.is_closed():
+                        continue
+                    for frame in reversed(pagina.frames):
+                        if self.pagina_lista(frame):
+                            return frame
+                except Exception:
+                    continue
         return None
 
     def iniciar(self, pw):
@@ -137,6 +154,8 @@ class Navegador(threading.Thread):
                         estado = 'ACTIVA' if pagina else ('ESPERANDO' if (browser or contexto) else 'DESCONECTADA')
                         if estado != previo:
                             self.enviar('estado', valor=estado)
+                            if estado == 'ACTIVA':
+                                self.enviar('log', texto='Formulario de Consulta pública detectado. Ya puedes consultar.')
                             previo = estado
                         ultimo = time.monotonic()
                     try:
@@ -159,7 +178,7 @@ class Navegador(threading.Thread):
                         contextos = browser.contexts if browser and browser.is_connected() else ([contexto] if contexto else [])
                         pagina = self.localizar(contextos)
                         if not pagina:
-                            self.enviar('error', texto='No se detectó el formulario activo de SIGER. Conecta Chrome y entra a Consulta pública.')
+                            self.enviar('error', texto='No se detectó el formulario de SIGER. Abre Consulta pública en la ventana de Chrome controlada por esta aplicación.')
                             self.enviar('fin')
                             continue
                         self.enviar('estado', valor='CONSULTANDO')
@@ -395,7 +414,7 @@ class App(tk.Tk):
                     valor = datos['valor']
                     color = '#20A466' if valor in ('ACTIVA', 'CONSULTANDO') else ('#DB9A20' if valor == 'ESPERANDO' else '#A0A9B4')
                     self.luz.itemconfigure(self.bombilla, fill=color)
-                    self.etiqueta.configure(text='CONECTADA' if valor == 'ACTIVA' else valor)
+                    self.etiqueta.configure(text='CONECTADA' if valor in ('ACTIVA', 'CONSULTANDO') else valor)
                 elif tipo == 'log':
                     self.estado_texto.configure(text=datos['texto'])
                 elif tipo == 'error':
