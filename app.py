@@ -7,9 +7,10 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
-from core import Consulta, SIGER_URL, analizar_xml, exportar_excel, fecha_actual, importar_archivo, preparar
+from core import (Consulta, SIGER_URL, agrupar_pendientes, analizar_xml, aplicar_edicion,
+                  exportar_excel, fecha_actual, importar_archivo, preparar, reconciliar_entradas)
 
 # Se ejecuta dentro de la pestaña de SIGER: cookies del navegador, sin copiarlas a Python.
 JS_CONSULTA = r"""async (criterios) => {
@@ -229,6 +230,7 @@ class App(tk.Tk):
         self.motor.start()
         self.registros: list[Consulta] = []
         self.ejecutando = False
+        self.editor = None
         self._crear_ui()
         self.after(150, self._procesar_eventos)
         self.protocol('WM_DELETE_WINDOW', self._cerrar)
@@ -272,7 +274,7 @@ class App(tk.Tk):
         self.entrada.pack(fill='x')
         self.entrada.bind('<KeyRelease>', self._agenda_vista)
         self.entrada.bind('<<Paste>>', lambda e: self.after(150, self._preparar_vista))
-        ttk.Label(caja, text='Vista previa · doble clic en una fila para corregir apellidos compuestos').pack(anchor='w', pady=(11, 5))
+        ttk.Label(caja, text='Vista previa · doble clic en cualquier nombre o apellido para editar la celda').pack(anchor='w', pady=(11, 5))
         marco = ttk.Frame(caja)
         marco.pack(fill='both', expand=True)
         cols = ('original', 'nombre', 'paterno', 'materno', 'estado', 'registros')
@@ -296,6 +298,10 @@ class App(tk.Tk):
         acciones.pack(fill='x', pady=(11, 8))
         self.boton_consultar = ttk.Button(acciones, text='Consultar lista', command=self._consultar)
         self.boton_consultar.pack(side='left')
+        self.boton_paralelo = ttk.Button(
+            acciones, text='Consultar 2 a la vez (beta)',
+            command=lambda: self._consultar(modo='consultar_paralelo'))
+        self.boton_paralelo.pack(side='left', padx=(8, 0))
         ttk.Button(acciones, text='Exportar Excel', command=self._exportar).pack(side='left', padx=9)
         self.boton_detener = ttk.Button(acciones, text='Detener', command=self.motor.cancelar.set)
         self.boton_detener.pack(side='left')
@@ -325,7 +331,7 @@ class App(tk.Tk):
             except ValueError as exc:
                 registros.append(Consulta(original=texto, tipo=self.tipo.get(),
                                          estado='REVISAR', observacion=str(exc)))
-        self.registros = registros
+        self.registros = reconciliar_entradas(self.registros, registros)
         self._mostrar_todo()
 
     def _mostrar_todo(self):
@@ -344,29 +350,54 @@ class App(tk.Tk):
         else:
             self.tabla.insert('', 'end', iid=str(i), values=vals, tags=(tag,))
 
-    def _editar(self, _event):
-        if self.ejecutando or self.tipo.get() != 'PERSONA':
+    def _editar(self, event):
+        """Edición en la propia celda: Enter confirma, Escape cancela."""
+        if self.ejecutando or self.editor:
             return
-        seleccionado = self.tabla.selection()
-        if not seleccionado:
+        if self.tabla.identify_region(event.x, event.y) != 'cell':
             return
-        i = int(seleccionado[0])
-        r = self.registros[i]
-        nombre = simpledialog.askstring('Corregir', 'Nombre(s):', initialvalue=r.nombre, parent=self)
-        if nombre is None:
+        item = self.tabla.identify_row(event.y)
+        columna = self.tabla.identify_column(event.x)
+        if not item:
             return
-        paterno = simpledialog.askstring('Corregir', 'Apellido paterno:', initialvalue=r.paterno, parent=self)
-        if paterno is None:
+        mapa = {'#1': 'original', '#2': 'nombre', '#3': 'paterno', '#4': 'materno'}
+        campo = mapa.get(columna)
+        if not campo:
             return
-        materno = simpledialog.askstring('Corregir', 'Apellido materno:', initialvalue=r.materno, parent=self)
-        if materno is None:
+        reg = self.registros[int(item)]
+        if reg.tipo == 'EMPRESA' and campo != 'original':
             return
-        if not all(x.strip() for x in (nombre, paterno, materno)):
-            messagebox.showwarning('Campos incompletos', 'Los tres campos son obligatorios')
+        self.tabla.selection_set(item)
+        caja = self.tabla.bbox(item, columna)
+        if not caja:
             return
-        r.nombre, r.paterno, r.materno = nombre.strip(), paterno.strip(), materno.strip()
-        r.estado, r.observacion = 'PENDIENTE', ''
-        self._mostrar_fila(i)
+        x, y, ancho, alto = caja
+        editor = ttk.Entry(self.tabla, font=('Segoe UI', 10))
+        editor.insert(0, getattr(reg, campo))
+        editor.place(x=x, y=y, width=ancho, height=alto)
+        self.editor = editor
+        finalizado = False
+
+        def terminar(guardar):
+            nonlocal finalizado
+            if finalizado:
+                return
+            finalizado = True
+            texto = editor.get()
+            editor.destroy()
+            self.editor = None
+            if guardar:
+                try:
+                    aplicar_edicion(reg, campo, texto)
+                except ValueError as exc:
+                    messagebox.showwarning('Edición', str(exc), parent=self)
+                self._mostrar_fila(int(item))
+
+        editor.bind('<Return>', lambda e: terminar(True))
+        editor.bind('<Escape>', lambda e: terminar(False))
+        editor.bind('<FocusOut>', lambda e: terminar(True))
+        editor.focus_set()
+        editor.selection_range(0, 'end')
 
     def _importar(self):
         ruta = filedialog.askopenfilename(filetypes=[('Listas', '*.xlsx *.csv *.txt')])
@@ -378,7 +409,7 @@ class App(tk.Tk):
             except Exception as exc:
                 messagebox.showerror('Importación', str(exc))
 
-    def _consultar(self):
+    def _consultar(self, modo='consultar'):
         if self.ejecutando:
             return
         if not self.registros:
@@ -390,8 +421,9 @@ class App(tk.Tk):
             return
         self.ejecutando = True
         self.boton_consultar.state(['disabled'])
+        self.boton_paralelo.state(['disabled'])
         self.boton_detener.state(['!disabled'])
-        self.comandos.put(('consultar', pendientes))
+        self.comandos.put((modo, pendientes))
 
     def _exportar(self):
         if not self.registros:
@@ -433,6 +465,7 @@ class App(tk.Tk):
                 elif tipo == 'fin':
                     self.ejecutando = False
                     self.boton_consultar.state(['!disabled'])
+                    self.boton_paralelo.state(['!disabled'])
                     self.boton_detener.state(['disabled'])
         except queue.Empty:
             pass
