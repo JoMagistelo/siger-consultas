@@ -181,7 +181,7 @@ class Navegador(threading.Thread):
                     # Preferir el formulario visible: la vista principal antes de iframes.
                     # Nunca seleccionar los workers ocultos del modo beta.
                     for frame in pagina.frames:
-                        if (frame.name or '').startswith('__siger_consultas_worker_'):
+                        if (getattr(frame, 'name', '') or '').startswith('__siger_consultas_worker_'):
                             continue
                         if self.pagina_lista(frame):
                             return frame
