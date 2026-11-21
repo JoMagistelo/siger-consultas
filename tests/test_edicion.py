@@ -61,10 +61,44 @@ class PruebasEdicion(unittest.TestCase):
         self.assertIn("Promise.allSettled", JS_PARALELO)
         self.assertNotIn("fetch(location.pathname", JS_PARALELO)
 
-    def test_no_permite_edicion_en_blanco(self):
-        r = preparar("JOSE CRUZ GOMEZ","PERSONA")
+    def test_puede_borrar_nombre_y_conservar_los_apellidos(self):
+        r = preparar("JOSE CRUZ GOMEZ", "PERSONA")
+        r.estado, r.registros = "ENCONTRADO", 57
+        aplicar_edicion(r, "nombre", "   ")
+        self.assertEqual(r.criterios(), dict(nombre="", paterno="CRUZ", materno="GOMEZ", razon=""))
+        self.assertEqual((r.estado, r.registros), ("PENDIENTE", None))
+
+    def test_puede_borrar_cualquiera_de_los_apellidos(self):
+        r = preparar("JOSE CRUZ GOMEZ", "PERSONA")
+        aplicar_edicion(r, "paterno", "")
+        aplicar_edicion(r, "materno", " ")
+        self.assertEqual((r.nombre, r.paterno, r.materno), ("JOSE", "", ""))
+
+    def test_se_conservan_ediciones_en_blanco(self):
+        r = preparar("JOSE CRUZ GOMEZ", "PERSONA")
+        aplicar_edicion(r, "materno", "")
+        self.assertIs(reconciliar_entradas([r], [preparar("JOSE CRUZ GOMEZ", "PERSONA")])[0], r)
+        self.assertEqual(r.criterios()["materno"], "")
+
+    def test_no_acepta_buscar_con_todos_los_campos_en_blanco(self):
+        r = preparar("JOSE CRUZ GOMEZ", "PERSONA")
+        aplicar_edicion(r, "nombre", "")
+        aplicar_edicion(r, "paterno", "")
+        with self.assertRaisesRegex(ValueError, "al menos"):
+            aplicar_edicion(r, "materno", "")
+        self.assertEqual(r.materno, "GOMEZ")
+
+    def test_permite_formato_separado_con_campos_vacios(self):
+        r = preparar(" | CRUZ | ", "PERSONA")
+        self.assertEqual(r.criterios(), dict(nombre="", paterno="CRUZ", materno="", razon=""))
         with self.assertRaises(ValueError):
-            aplicar_edicion(r,"nombre","  ")
+            preparar(" | | ", "PERSONA")
+
+    def test_no_permite_razon_social_vacia(self):
+        r = preparar("BIMBO", "EMPRESA")
+        with self.assertRaises(ValueError):
+            aplicar_edicion(r, "original", "")
+        self.assertEqual(r.razon, "BIMBO")
 
 
 if __name__ == "__main__":
