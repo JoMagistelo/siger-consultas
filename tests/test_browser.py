@@ -67,5 +67,12 @@ class DeteccionSIGER(unittest.TestCase):
         self.assertNotIn('fetch(location.pathname', JS_CONSULTA)
 
 
+    def test_no_se_conecta_a_worker_oculto(self):
+        oculto = Frame('https://rpc.economia.gob.mx/siger2/xhtml/index.xhtml')
+        oculto.name = '__siger_consultas_worker_0'
+        self.assertIsNone(Navegador(None, None).localizar([Context([Page([oculto])])]))
+
+
+
 if __name__ == '__main__':
     unittest.main()
