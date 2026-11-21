@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from collections import defaultdict, deque
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ class Consulta:
     registros: int | None = None
     observacion: str = ""
     fecha: str = ""
+    fuente: str = ""  # Texto de origen para conservar ediciones entre actualizaciones.
 
     def criterios(self) -> dict[str, str]:
         return dict(nombre=self.nombre, paterno=self.paterno, materno=self.materno, razon=self.razon)
@@ -64,6 +66,59 @@ def preparar(texto: str, tipo: str) -> Consulta:
     else:
         nombre, paterno, materno = separar_nombre(original)
     return Consulta(original=original, tipo=tipo, nombre=nombre, paterno=paterno, materno=materno)
+
+
+def aplicar_edicion(reg: Consulta, campo: str, valor: str) -> Consulta:
+    """La vista previa es la fuente de criterios; editar invalida un resultado previo."""
+    valor = " ".join(valor.split())
+    if not valor:
+        raise ValueError("El campo no puede quedar vacío")
+    if reg.tipo == "EMPRESA":
+        if campo != "original":
+            raise ValueError("Para empresas edita la razón social")
+        reg.fuente = reg.fuente or reg.original
+        reg.original = valor
+        reg.razon = valor
+    elif reg.tipo == "PERSONA":
+        if campo == "original":
+            nuevo = preparar(valor, "PERSONA")
+            reg.fuente = reg.fuente or reg.original
+            reg.original = nuevo.original
+            reg.nombre, reg.paterno, reg.materno = nuevo.nombre, nuevo.paterno, nuevo.materno
+        elif campo in ("nombre", "paterno", "materno"):
+            setattr(reg, campo, valor)
+        else:
+            raise ValueError("Columna no editable")
+        if not all((reg.nombre.strip(), reg.paterno.strip(), reg.materno.strip())):
+            raise ValueError("Nombre y ambos apellidos son obligatorios")
+    else:
+        raise ValueError("Tipo de consulta desconocido")
+    reg.estado, reg.registros, reg.observacion, reg.fecha = "PENDIENTE", None, "", ""
+    return reg
+
+
+def reconciliar_entradas(anteriores: list[Consulta], nuevos: list[Consulta]) -> list[Consulta]:
+    """Mantiene ediciones y resultados si la misma entrada sigue en el cuadro de texto.
+
+    Las entradas duplicadas se emparejan por posición de aparición y tipo.
+    """
+    disponibles = defaultdict(deque)
+    for previo in anteriores:
+        disponibles[(previo.tipo, previo.fuente or previo.original)].append(previo)
+    salida = []
+    for nuevo in nuevos:
+        grupo = disponibles.get((nuevo.tipo, nuevo.original))
+        salida.append(grupo.popleft() if grupo else nuevo)
+    return salida
+
+
+def agrupar_pendientes(pendientes: list[tuple[int, Consulta]]) -> list[list[tuple[int, Consulta]]]:
+    """Evita consultar varias veces exactamente los mismos criterios en un lote."""
+    grupos = {}
+    for indice, reg in pendientes:
+        clave = (reg.tipo, reg.nombre, reg.paterno, reg.materno, reg.razon)
+        grupos.setdefault(clave, []).append((indice, reg))
+    return list(grupos.values())
 
 
 def analizar_xml(respuesta: str) -> tuple[int, str | None]:
