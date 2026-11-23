@@ -654,7 +654,14 @@ if __name__ == '__main__':
         try:
             prueba_portable()
         except Exception as exc:
-            print('ERROR AUTOPRUEBA:', str(exc), file=sys.stderr)
+            # El EXE es GUI (--windowed): sys.stderr puede ser None.
+            # Registrar solo diagnóstico local de la autoprueba, sin datos SIGER.
+            import tempfile
+            import traceback
+            Path(tempfile.gettempdir(), 'SIGER-Consultas-self-test-error.txt').write_text(
+                traceback.format_exc(), encoding='utf-8')
+            if sys.stderr:
+                print('ERROR AUTOPRUEBA:', str(exc), file=sys.stderr)
             raise SystemExit(1)
         raise SystemExit(0)
     App().mainloop()
