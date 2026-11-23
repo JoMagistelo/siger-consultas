@@ -1,0 +1,127 @@
+name: Windows portable (sin instalar Python)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publicar_release:
+        description: 'Publicar ZIP como Release (solo en main, tras probarlo)'
+        type: boolean
+        required: false
+        default: false
+      version:
+        description: 'Etiqueta para Release (ej. v0.3.0)'
+        type: string
+        required: false
+        default: 'v0.3.0'
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'core.py'
+      - 'requirements.txt'
+      - 'GUIA_PORTABLE.md'
+      - '.github/workflows/windows-portable.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'app.py'
+      - 'core.py'
+      - 'requirements.txt'
+      - 'GUIA_PORTABLE.md'
+      - '.github/workflows/windows-portable.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Python de compilacion (no es necesario en los equipos de destino)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Instalar herramientas de compilacion
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "pyinstaller>=6.10,<7"
+
+      - name: Pruebas del proyecto
+        run: python -m unittest discover -s tests -v
+
+      - name: Descargar Chromium para INCLUIRLO en el paquete
+        shell: pwsh
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: '0'
+        run: |
+          python -m playwright install chromium
+          $browserDir = python -c "from pathlib import Path; import playwright; print(Path(playwright.__file__).parent / 'driver' / 'package' / '.local-browsers')"
+          if (-not (Test-Path $browserDir)) {
+            throw "No se encontro Chromium en $browserDir"
+          }
+          Write-Host "Chromium incluido: $browserDir"
+
+      - name: Crear EXE portatil
+        shell: pwsh
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: '0'
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name SIGER-Consultas --collect-all playwright --collect-all openpyxl app.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fallo PyInstaller' }
+
+      - name: Autoprueba del EXE final (incluyendo navegador sin Internet)
+        shell: pwsh
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: '0'
+        run: |
+          $exe = Join-Path $PWD 'dist\SIGER-Consultas\SIGER-Consultas.exe'
+          if (-not (Test-Path $exe)) { throw 'No existe el ejecutable' }
+          & $exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Fallaron las pruebas del EXE: $LASTEXITCODE" }
+
+      - name: Crear ZIP para compartir
+        shell: pwsh
+        run: |
+          Copy-Item GUIA_PORTABLE.md dist\SIGER-Consultas\LEER_PRIMERO.md
+          Compress-Archive -Path dist\SIGER-Consultas -DestinationPath SIGER-Consultas-Windows-x64.zip -Force
+          Get-Item SIGER-Consultas-Windows-x64.zip | Select-Object Name, Length
+
+      - name: Guardar paquete descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: SIGER-Consultas-Windows-x64
+          path: SIGER-Consultas-Windows-x64.zip
+          retention-days: 30
+          if-no-files-found: error
+
+  publicar:
+    needs: portable
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publicar_release }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar ZIP validado de esta ejecucion
+        uses: actions/download-artifact@v4
+        with:
+          name: SIGER-Consultas-Windows-x64
+      - name: Crear Release publico de la version elegida
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version invalida. Usa v0.3.0"; exit 1
+          fi
+          gh release create "$VERSION" SIGER-Consultas-Windows-x64.zip \
+            --title "SIGER Consultas $VERSION — Windows portátil" \
+            --notes "ZIP portátil para Windows x64. Incluye Python, Playwright y Chromium; requiere conexión a Internet y cuenta de SIGER. Ejecutar SIGER-Consultas.exe después de extraer la carpeta. El CAPTCHA se resuelve manualmente. Ejecutable sin firma digital." \
+            --target "$TARGET_SHA"
