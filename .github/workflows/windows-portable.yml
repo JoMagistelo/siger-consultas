@@ -81,8 +81,14 @@ jobs:
         run: |
           $exe = Join-Path $PWD 'dist\SIGER-Consultas\SIGER-Consultas.exe'
           if (-not (Test-Path $exe)) { throw 'No existe el ejecutable' }
-          & $exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "Fallaron las pruebas del EXE: $LASTEXITCODE" }
+          # Al ser un EXE GUI (--windowed), PowerShell no espera con "&" ni
+          # actualiza $LASTEXITCODE; usar Start-Process -Wait -PassThru.
+          $proceso = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($proceso.ExitCode -ne 0) {
+            $log = Join-Path $env:TEMP 'SIGER-Consultas-self-test-error.txt'
+            if (Test-Path $log) { Get-Content $log | Select-Object -Last 70 }
+            throw "Fallaron las pruebas del EXE: $($proceso.ExitCode)"
+          }
 
       - name: Crear ZIP para compartir
         shell: pwsh
