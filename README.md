@@ -2,6 +2,16 @@
 
 Aplicación de escritorio para consultar **socios (personas)** y **razones sociales** en SIGER 2.0. Extrae el total de registros de la respuesta AJAX. **No confirma por sí sola la identidad de un socio.** El modo secuencial ya fue validado por el usuario contra la web real; el modo paralelo es experimental.
 
+## Windows portátil (para quienes NO instalan Python)
+
+Existe un flujo de GitHub Actions `Windows portable (sin instalar Python)` que construye `SIGER-Consultas-Windows-x64.zip` con el EXE, Playwright y Chromium integrado. Después de validarlo en Windows, se puede publicar como Release para descargarlo sin cuenta GitHub.
+
+**Uso:** descargar el ZIP, extraer la carpeta completa, ejecutar `SIGER-Consultas.exe` e iniciar sesión manualmente. No requiere Python, pip, Playwright ni Chrome instalados. El usuario sigue necesitando Windows x64, conexión a Internet y cuenta válida de SIGER. El ejecutable no está firmado digitalmente.
+
+Ver [Guía de distribución portátil](GUIA_PORTABLE.md) y [paso a paso para capturar las solicitudes de paginación y Revisar](GUIA_EXTRACCION.md).
+
+**Alcance de esta primera versión:** búsquedas, edición de criterios, clasificación y exportación. Aún no incluye capturas automáticas, cronómetro ni extracción de detalles completos.
+
 ## Windows
 
 1. Ejecuta `INSTALAR.bat` (Python 3.11+ recomendado; crea `.venv`).
