@@ -14,3 +14,8 @@ ChromeProfile/
 user_data/
 .siger/
 resultados*/
+
+# Archivos de compilación; nunca enviar perfiles ni distribución a Git.
+dist/
+build/
+*.spec
