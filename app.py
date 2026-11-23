@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import os
+import sys
 import queue
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+
+# El ejecutable empaquetado busca el Chromium integrado, no el perfil Chrome del usuario.
+# Es el modo oficial de empaquetado de Playwright con PYINSTALLER.
+if getattr(sys, "frozen", False):
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
 from core import (Consulta, SIGER_URL, agrupar_pendientes, analizar_xml, aplicar_edicion,
                   exportar_excel, fecha_actual, importar_archivo, preparar, reconciliar_entradas)
@@ -201,7 +207,10 @@ class Navegador(threading.Thread):
         local = Path(os.getenv('LOCALAPPDATA', str(Path.home()))) / 'SIGERConsultas' / 'ChromeProfile'
         local.mkdir(parents=True, exist_ok=True)
         fallos = []
-        for canal in ('chrome', 'msedge', None):
+        # En Windows portátil, priorizar el Chromium empaquetado.
+        # En modo desarrollador, conservar el comportamiento actual (Chrome/Edge).
+        canales = (None, 'chrome', 'msedge') if getattr(sys, 'frozen', False) else ('chrome', 'msedge', None)
+        for canal in canales:
             try:
                 ctx = pw.chromium.launch_persistent_context(
                     user_data_dir=str(local), headless=False, channel=canal,
@@ -364,7 +373,8 @@ class Navegador(threading.Thread):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('SIGER 2.0 | Consultas')
+        self.title('SIGER 2.0 | Consultas' +
+                   (' | Portátil' if getattr(sys, 'frozen', False) else ''))
         self.geometry('1040x715')
         self.minsize(870, 590)
         self.configure(bg='#F4F7FB')
@@ -620,5 +630,31 @@ class App(tk.Tk):
         self.destroy()
 
 
+def prueba_portable():
+    """Autoprueba del EXE; no usa la red ni accede a credenciales SIGER."""
+    from playwright.sync_api import sync_playwright
+    from openpyxl import Workbook
+
+    libro = Workbook()
+    libro.active['A1'] = 'SIGER'
+    assert libro.active['A1'].value == 'SIGER'
+    libro.close()
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            pagina = browser.new_page()
+            pagina.goto('data:text/html,<html><head><title>SIGER-TEST</title></head><body>OK</body></html>')
+            assert pagina.title() == 'SIGER-TEST'
+        finally:
+            browser.close()
+
+
 if __name__ == '__main__':
+    if '--self-test' in sys.argv:
+        try:
+            prueba_portable()
+        except Exception as exc:
+            print('ERROR AUTOPRUEBA:', str(exc), file=sys.stderr)
+            raise SystemExit(1)
+        raise SystemExit(0)
     App().mainloop()
